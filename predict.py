@@ -1,113 +1,43 @@
 """ This module generates notes for a midi file using the
     trained neural network """
-import pickle
 import numpy
-import json
-from music21 import converter, instrument, note, stream, chord, duration
-from keras.models import Sequential
-from keras.layers import Dense
-from keras.layers import Dropout
-from keras.layers import LSTM
-from keras.layers import Activation
+import sys
+from music21 import instrument, note, stream, chord, duration
+
+import utils
+
+if len(sys.argv) > 1:
+    weights = sys.argv[1]
+else:
+    raise ValueError("Forgot to pass the model!")
 
 encoding_file = 'encoding'
-with open(encoding_file, 'r') as fhandle:
-    int_to_note = json.load(fhandle)
-    int_to_note = {int(key): val for key, val in int_to_note.items()}
-
-note_to_int = {tuple(val): key for key, val in int_to_note.items()}
 
 
 generate_from = 'midi_songs/ahead_on_our_way_piano.mid'
 lstm_length = 100
 
 
-def get_notes_duration():
-    """ Get all the notes and chords from the midi files in the ./midi_songs directory """
-    midi = converter.parse(generate_from)
-
-    parts = instrument.partitionByInstrument(midi)
-
-    if parts:  # file has instrument parts
-        notes_to_parse = parts.parts[0].recurse()
-    else:  # file has notes in a flat structure
-        notes_to_parse = midi.flat.notes
-
-    notes = []
-    for element in notes_to_parse:
-        if isinstance(element, note.Note):
-            notes.append((str(element.pitch), float(element.duration.quarterLength)))
-        elif isinstance(element, chord.Chord):
-            notes.append(('.'.join(str(n) for n in element.normalOrder),
-                          float(element.duration.quarterLength)))
-        if len(notes) >= 5*lstm_length:
-            break
-
-    return notes
-
-
 def generate():
     """ Generate a piano midi file """
 
     # Get all pitch names
-    notes = get_notes_duration()
-    n_vocab = len(int_to_note)
+    notes = utils.get_nodes_duration_for_prediction(utils.seed_file)
 
-    network_input, normalized_input = prepare_sequences(notes, n_vocab)
-    model = create_network(normalized_input, n_vocab)
-    prediction_output = generate_notes(model, network_input, n_vocab)
+    normalized_input, network_input, _ = utils.prepare_sequences(notes)
+    model = utils.create_network(normalized_input)
+    # Load the weights to each node
+    model.load_weights(weights)
+
+    prediction_output = generate_notes(model, network_input)
     create_midi(prediction_output)
 
 
-def prepare_sequences(notes, n_vocab):
-    """ Prepare the sequences used by the Neural Network """
-    # map between notes and integers and back
-
-    network_input = []
-    print(notes)
-
-    for i in range(0, len(notes) - lstm_length, 1):
-        sequence_in = notes[i:i + lstm_length]
-        network_input.append([note_to_int[char] for char in sequence_in])
-
-    n_patterns = len(network_input)
-
-    # reshape the input into a format compatible with LSTM layers
-    normalized_input = numpy.reshape(network_input, (n_patterns, lstm_length, 1))
-    # normalize input
-    normalized_input = normalized_input
-
-    return (network_input, normalized_input)
-
-
-def create_network(network_input, n_vocab):
-    """ create the structure of the neural network """
-    print(network_input.shape)
-    model = Sequential()
-    model.add(LSTM(
-        128,
-        input_shape=(network_input.shape[1], network_input.shape[2]),
-        return_sequences=True
-    ))
-    model.add(Dropout(0.3))
-    model.add(LSTM(128, return_sequences=True))
-    model.add(Dropout(0.3))
-    model.add(LSTM(128))
-    model.add(Dense(64))
-    model.add(Dropout(0.3))
-    model.add(Dense(n_vocab))
-    model.add(Activation('softmax'))
-    model.compile(loss='categorical_crossentropy', optimizer='rmsprop')
-
-    # Load the weights to each node
-    model.load_weights('weights-improvement-02-3.9040-bigger.hdf5')
-
-    return model
-
-
-def generate_notes(model, network_input, n_vocab):
+def generate_notes(model, network_input):
     """ Generate notes from the neural network based on a sequence of notes """
     # pick a random sequence from the input as a starting point for the prediction
+    n_vocab = utils.nr_pitches()
+    int_to_note = utils.get_int_to_note()
     start = numpy.random.randint(0, len(network_input)-1)
 
     pattern = network_input[start]
@@ -115,16 +45,19 @@ def generate_notes(model, network_input, n_vocab):
 
     # generate 500 notes
     for note_index in range(500):
-        prediction_input = numpy.reshape(pattern, (1, len(pattern), 1))
-        prediction_input = prediction_input
-
+        prediction_input = numpy.reshape(pattern, (1, len(pattern), 2))
+        print(prediction_input[0])
         prediction = model.predict(prediction_input, verbose=0)
 
-        index = numpy.argmax(prediction)
-        result = int_to_note[index]
-        prediction_output.append(result)
+        pitch_pred, dur_pred = prediction
+        pitch_index = numpy.argmax(pitch_pred)
+        dur_index = numpy.argmax(dur_pred)
 
-        pattern.append(index)
+        pitch = int_to_note[pitch_index]
+        dur = utils.decode_duration(dur_index)
+        prediction_output.append([pitch, dur])
+
+        pattern.append((pitch_index/n_vocab, dur_index/5))
         pattern = pattern[1:len(pattern)]
 
     return prediction_output
@@ -166,6 +99,7 @@ def create_midi(prediction_output):
     midi_stream = stream.Stream(output_notes)
 
     midi_stream.write('midi', fp='test_output.mid')
+
 
 if __name__ == '__main__':
     generate()
