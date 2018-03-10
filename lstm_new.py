@@ -28,8 +28,6 @@ def train(model, network_input, network_output):
         mode='min'
     )
     callbacks_list = [checkpoint]
-    print(network_output[0].shape)
-    print(network_output[1].shape)
 
     model.fit(network_input, network_output,
               epochs=200, batch_size=64, callbacks=callbacks_list)
